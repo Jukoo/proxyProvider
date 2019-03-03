@@ -1,0 +1,148 @@
+#########################################################
+# script name  : VpnDump 
+# author       : juko <funscript@outlook.fr>
+# repository   : https://github/jukoo
+# description  : usage of Proxy Ip address on server  
+#########################################################
+#set -euo pipefail    # Strict Mode Activated 
+. .utils    # The utils source package
+
+if [[ $1 == "-h" ]] || [[ $1 == "--help" ]] ; then 
+   clear 
+   prompt
+else
+echo "Initilizing..." && sleep 3
+    cpu_manager 
+    PERMIT_ROOT
+    initbackrestor 
+fi
+prxyrnd(){ 
+InitPokeService         # Prepare url links to get public ip address  
+pull_IP_Addr () {
+
+    local HPOKER=$(RND_PS)  
+     Ip_revelant $HPOKER  && echo "$?"    
+        [[ $? -eq 0 ]] && { 
+            PBIP=$(Ip_revelant ${HPOKER}) 
+            SRCSERVPOK=${HPOKER#prefix}
+            prompt "Status [$b_CGSC ON $CDEF].........${HPOKER#prefix}"  
+            return 0 
+        }||{
+            prompt "Status [$b_CRER OFF $CDEF]........${HPOKER#prefix}"  
+            POKERCOUNT=$(($POKERCOUNT+1)) 
+            if [[ $POKERCOUNT -eq ${#HOST_POKERS[@]} ]] ; then 
+                bail "NetWork error" $PcURLTLMT ; exit $PcURLTLMT
+            else 
+                pull_IP_Addr   
+            fi         
+        }
+}
+
+pull_IP_Addr 
+[ $? -eq 0 ]  && {
+#declare -r PBIP 
+prompt " Your  public IP address  is [$b_CGSC $PBIP $CDEF]"
+prompt " looking Random Address proxy "
+local  LMTTRY=${#PRXYADDR[*]}
+#RAPRX=$(RND_PSx) 
+
+#HTTP_PXYEXPRT $RAPRX
+ 
+#while [ $? ! -eq 0 ] ;do 
+#     LMTTRY=$(($LMTTRY-1))
+#     prompt " Proxy address down  [[ NExT ]]" #
+#HTTP_PXYEXPRT $RAPRX  
+#done 
+
+prompt " your ip is set to [$(Ip_revelant $SRCSERVPOK)]" 
+
+}||{
+bail $? 
+}
+ 
+} 
+
+
+prxych() {
+    prompt "intializing Proxychains ... " 
+    procrastinate 40 .1  
+    prompt " satus : not-stable  $b_CWAR⬤$CDEF"
+    Apt_lookUp  
+    [ $? -eq 0 ] && { 
+        prompt "aptitude.....[$b_CGSC FOUND $CDEF] " 
+        PRXYPKG_installer 
+        PRXCH_init  
+        local rplist_size 
+        rplist_size=$(stat -c%s "$PRXYF") 
+        echo "$rplist_size byte"
+        if [[ -f $PRXYF ]] && [[ $rplist_size -gt 0 ]] ; then 
+            prompt " porceding contains tranfers ..." 
+           
+            #allow_proxychains_conf $RPSList 
+            proxy_addr_Parser_endfile $PRXYF 
+        else 
+            prompt "cannot read empty file or null byte "
+            bail "ERROR:ZERO_BYTE_ERR"  9 
+            exit $? 
+        fi 
+    }|| {
+        bail "aptidute not found "  $DESAPT 
+        exit $? 
+    }  
+}
+    
+Squid_service () {
+    prompt " intializing Squid3 ... "&& sleep 3 
+    Squid3_init
+       [[ $? -eq 0 ]] && {  
+         if [[ -n $1 ]]  ; then 
+            squid_crushCnf $1 
+            [[ $? -eq 0 ]] && {
+                prompt " restarting  services ... please Wait  " 
+                procrastinate 10 .1 
+                service ${PRXYUTILS[1]::-1} restart  
+            }||{
+              prompt "uncrushing file..." 
+              exit 12 
+            }
+        else
+            prompt " reading  squid3 default conf"  
+        fi
+        Squid3EnableServices 
+    }||{
+        bail "an error was occured" $ERRDEF 
+        exit $ERRDEF 
+    }
+} 
+
+if [[  -z "$1" ]] ; then 
+    prompt " missing argument"
+    exit 1 
+else   
+    case $1 in 
+    "-eap" |"--enable-address-proxy") prxyrnd;; 
+    "-pch" | "--proxychains") prxych ;; 
+    "-h"   | "--help")Vpndump_opt_helper ;;
+    "-up"  | "--upgrade-pchains") UpgradePCH;; 
+    "-sqd" | "--enable-squid")Squid_service ;; 
+    "-r"   | "--read") 
+        if [[ -n $2 ]] ; then 
+            Squid_service $2 
+        fi
+        ;; 
+    "-a"   | "--enable-all") runAll prxyrnd prxych Squid_service;;
+    "-s"   | "--save")
+           if [[ -n $2 ]]  && [[ -n $3 ]]  ; then 
+             Proxy_register $2  $3 
+           fi 
+        ;;  
+    "res"   | "--restore") 
+       restore $2 ;;  
+    *)
+     bail "Unkown argument ... " 
+     exit 1 
+    ;;
+    esac ; shift  
+fi
+
+trap "[ Canceled ]" 2 3 

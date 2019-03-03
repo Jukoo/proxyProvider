@@ -1,0 +1,412 @@
+#!/bin/bash
+set -o monitor
+ 
+#InitPRXYIPS           # Initialize the proxy address 
+IPproxyLst=proxy.lst                            # the file of ip proxy address <<xxx.xxx.xxx.xxx:xxxx>>
+cpuloadavg=$( awk '{print $1}'  /proc/loadavg ) # read the loadaverage cpu every 5 sec 
+set -o errexit                                  # auto exit if errors found 
+ERR_NO_ROOT_ACCESS=1000                         # uid user error  if loged as user 
+USRBIN=/usr/bin/                                # the supposed dir folder 
+PRXYUTILS=("proxychains" "squid3")              # the needed  Package  
+squidConf=squid.conf                            # the name of squid conf file 
+proxychconf=proxychains.conf                    # the name of procxychains file 
+PRXYCACHE=.proxyins                             # the file cache if the required are installed 
+PRXYPROTCOL="http"                              # the protocol proxy  
+DIRCONF=/etc                                    # config directory 
+prxysnapConf=proxychains.conf.old               # file snapshot of proxychains configuration 
+squidsnapConf=squid.conf.old                    # file snapshot of squid configuration 
+iPattern=^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ # regex pattern of ip address Ipv4 
+pPattern=^[0-9]{3,4}                            # regex pattern if port 
+declare -r USRBIN PRXYUTILS PRXYCACHE PPattern  # on read only immutable var  
+snapback=snapback                               # the snapshot directory 
+declare -i Proxy_addr POKERCOUNT                # declaring integer 
+POKERCOUNT=0                                    # Varible POKERCOUNT initialized 
+declare -a  HOST_POKERS PRXYADDR PKGMAN         # declaring array 
+POKE=pokeServices.conf                          # list of urls service to get your Public Ip 
+PKGMAN=("aptitude")                             # array of package manager for instance aptitude is used 
+PRXYF=RPSList                                   # list of proxy Address     
+ERRDEF=100                                      # error exit default 
+ERRSTMT=5                                       # semantic Error  
+CURLERR=2                                       # cURL error 
+DESAPT=30                                       # aptitude not found 
+PcURLTLMT=10                                    # error could not resolve  host 
+CURLLIMTMAXTOUT=60                              # cURL connexion timeout  
+FPERR=14                                        # File parsing error
+PBIP=""                                         # Public Ip Address 
+SRCSERVPOK=""                                   # the responding url 
+UID_ROOT=0                                      # uid root if loged as super user [root]
+
+PERMIT_ROOT () {                                # root Permission to run the script as root 
+   if [[ ${UID} -eq $UID_ROOT ]] ; then         # [ recommanded ] 
+        prompt " root : [Identified] "
+    else 
+cat << STDOUT
+     Before starting to run this script 
+     it preferable to run it as super user [root] 
+     to avoid a quick exit in the programme 
+     because many operation are write file 
+     in root directory      
+STDOUT
+    read -p "ROOT ACCESS[yY|Nn]:~> " user_to_root 
+    case $user_to_root in   
+    [y]|[Y]|[yes]|[YES]|[Yes])
+        sudo su             
+        ;;
+    *)prompt " operation [ canceled ]"
+        ;; 
+        esac 
+   fi 
+}
+
+initbackrestor() {                              # create dir folder to store snapshot of config files 
+    if [[  ! -d $snapback ]] ; then             # in /etc/ [squid]|[proxychains]
+        prompt "creating dir snaphshot backup restore..."
+        procrastinate 30 .2  
+        mkdir $snapback | pv -p  
+        sleep 2 
+    else 
+        prompt "[ ok ]..."
+    fi 
+}
+
+CDEF=" \0033[0m"                                # default color 
+CCIN=" \033[0;36m"                              # info color 
+CGSC=" \033[0;32m"                              # success color 
+CRER=" \033[0;31m"                              # error color 
+CWAR=" \033[0;33m"                              # waring color 
+b_CDEF=" \033[1;37m"                            # bold default color 
+b_CCIN=" \033[1;36m"                            # bold info color 
+b_CGSC=" \033[1;32m"                            # bold success color 
+b_CRER=" \033[1;31m"                            # bold error color
+b_CWAR=" \033[1;33m"                            # bold warning color 
+
+prompt () {                                     # print string on stdout term
+    [ -z "$1" ] && {
+        echo -e "███████████████████████████"
+    }||{
+      echo -e "» $1"
+    }
+}
+
+bail () {                                       # return no zero code on error satement 
+    [[ -z "$1" ]]&&{                            # call prompt to show mesg on stdout term
+        prompt "error handeling "               
+        return $ERRDEF      
+    }||{
+        prompt "$CRER $1 $CDEF" 
+        return $2  
+    }
+}
+
+Ip_revelant () {                                # catch your Public Ip Address on Internet 
+     curl ${1} | pv > /dev/null  
+     [[ $? -eq 0 ]] && { 
+        return $?       
+      }|| {
+        return $?         
+    }
+} 
+
+HTTP_PXYEXPRT () {                              # change your Public IP to PRoxy IP     
+    # need first enty point parameter           # to random location 
+    export  {http,https,ftp,sftp}_proxy="http://$1"                
+    #add Https_proxy by enablin proxy 
+}
+
+File_parser () {                                # read file and parse to extract information 
+    # $1 should b a character                   # WARNING : the file file should repect a specific 
+    if [[ -n $1  ]] && [[ -f $1  ]] ;then       # syntax   
+        cut -d, -f1 $1                          # xxxxxx,xxxxx
+    else 
+        bail "File Corrupted check syntax" $FPERR 
+    fi 
+}
+
+
+InitPokeService () {                            # extract the information from file 
+    for HPServ in $(File_parser $POKE) ; do     # and store it in a array 
+        HOST_POKERS+=("${HPServ}")              
+    done 
+
+} 
+
+RND_PS() {                                      # Randomize the elements from the array 
+    local Rand      
+    Rand=$((RANDOM%=${#HOST_POKERS[@]}))        
+    echo ${HOST_POKERS[$Rand]}
+}
+
+InitPRXYIPS () {                                # extract the information from Proxy ip list            
+    for PRXY in $(cat $IPproxyLst) ; do         # and store it in array 
+        PRXYADDR+=("${PRXY}")
+    done    
+}
+
+RND_PSx() {                                     # Randomize the elements from array 
+    local RND  
+    RND=$((RANDOM%=${#PRXYADDR[@]})) 
+    echo ${PRXYADDR[$RND]}
+}
+prxip_check_parttern () {                       # like middleware the check the correct syntax of 
+    if [[ -n $1 ]] && [[ $1 =~ $PPattern ]] ;   # Ipv4 address 
+    then 
+        return 0 
+    else 
+        return 1 
+    fi 
+
+}
+                                                                
+#    *   *  ** ****   ** ###########################################   
+#   *  **  * * * *   **** #                                         #
+#    *     *  ***  *  **** #  Installation and auto set Config       #
+#   *  **     *** ********#                                         # 
+# ***** * * ****  * **** ##########################################
+Apt_lookUp () {                             # check if apt package manager is used in current system 
+    if [[ ! -f $PRXYCACHE ]] ; then         
+        find $USRBIN -name $PKGMAN 
+        #grep -r $PKGMAN $USRBIN | pv > /dev/null 
+        [ $? -eq 0 ] &&{
+        return $?
+        }||{
+        bail "this syteme doesn't use $PKGMAN" $ERRDEF 
+        } 
+    else
+        prompt "" 
+    fi  
+}   
+
+PRXYPKG_installer () {                      # Install all the package needed to work with 
+    if [[ ! -f $PRXYCACHE ]] && [[ ! -e $PRXYCACHE  ]] ; then 
+        prompt " installing the required package"
+        procrastinate 80 .5 
+        for px_util in ${PRXYUTILS[@]} ; do
+           echo $px_util 
+           # sudo $PKGMAN install $px_util --assume-yes > $PRXYCACHE 
+        if [[ $? -eq 0  ]] ; then 
+            sleep 3 
+            prompt " $CGSC $px_util is successfully installed $CDEF"
+         fi 
+        done 
+      
+    else 
+        prompt "  Status [$b_CGSC ALL is OK $CDEF] "
+    fi  
+
+}
+## this function will be operate only if the 
+# RPSList is available 
+
+#PRXCH_allow_conf () {
+    #white the Proxychains config file 
+#    declare -r PRXYPROTCOL 
+#    for proxy_ip in ${PRXYADDR[*]} ; do 
+#       sudo cat $PRXYPROTCOL ${proxy_ip} >> $DIRCONF/$proxychconf
+#       if [ $? ! -eq 0 ] ; then 
+#           bail "cannot write the file" $ERRDEF  
+#exit $? 
+#       fi 
+#    done 
+#} 
+
+##### Proxychain setup 
+PRXCH_init () {                             # initialize the proxychains creating snapshot 
+    if [[ !  -f $snapback/$prxysnapConf ]] ; then 
+    prompt "creating snapshot of proxuchains confifuration ..." 
+         cp -v $DIRCONF/proxychains.conf   ${PWD}/$snapback/$prxysnapConf | pv -v  > /dev/null 
+         return $? 
+     else  
+        prompt " $b_CDEF snapshost history $CDEF" 
+        stat  $snapback/$prxysnapConf 
+        return $? 
+    fi 
+} 
+
+
+Proxy_register () {                                 # add Ip Proxy to RPSList 
+    if [[ $1 =~ $iPattern ]] && [[ $2 =~ $pPattern ]]; then 
+          prompt " Ipv4:PP [checked]" 
+          TCP_PROXY_SINGLE $1:$2
+          echo "$PRXYPROTCOL    $1 $2" >> $PRXYF  
+          read -p " would do you like to add in proxychains.conf [yY]" 
+          case ${REPLY} in 
+              [y]|[Y]|[yes]|[YES]|[Yes])
+                  allow_proxychains_conf $PRXYF
+                  ;;
+              *)prompt " operation [ canceled ]" 
+                ;; 
+        esac 
+    else 
+       bail " missing parameter or wrong pattern" $ERRDEF 
+       exit $ERRDEF  
+    fi 
+}
+
+TCP_PROXY_SINGLE () {                               # set global var http_proxy  to new address proxy  
+    export  http_proxy="http://$1"
+} 
+proxy_addr_Parser_endfile () { 
+    prompt " Parsing IP address ... " && sleep 2 
+    awk 'END{print}' $1  
+}
+allow_proxychains_conf () {                         # add ip Proxy to Proxychains.conf 
+    
+    if [ ${UID} -eq 0 ];then 
+        if [[ -f $DIRCONF/$proxychconf ]] ; then 
+            proxy_addr_Parser_endfile $PRXYF >> $DIRCONF/$proxychconf | pv > /dev/null   
+            [ $? -eq 0 ] && prompt "$proxychconf modified"  
+            stat  $DIRCONF/$proxychconf  
+        else  
+            bail "$proxychconf not found " $ERRDEF 
+            exit $ERRDEF 
+        fi 
+    else 
+        bail  "Permission denied ... root access required " $ERR_NO_ROOT_ACCESS 
+        exit $? 
+    fi 
+}
+
+
+    
+### squid service 
+
+
+UpgradePCH () {                                     # upgrage the packages to new version 
+    prompt " $CWAR The $PRXYUTILS 'll be upgrated to the last version ...$CDEF" #&& sleep 2
+    prompt " rocking loadavg ... please wait the packages are upgrading"
+    procrastinate 45 .3  
+    sudo $PKGMAN safe-upgrade $PRXYUTILS -y   
+} 
+
+Squid3_init () {                                   # initialize squid creating snapshot  
+    if [[ !  -f $snapback/$squidsnapConf ]] ; 
+    then 
+        prompt "creating snapshot of squid confifuration ..."
+        cp -v $DIRCONF/${PRXYUTILS[1]::-1}/squid.conf   ${PWD}/$snapback/$squidsnapConf 
+         return $? 
+     else  
+        prompt " $b_CDEF snapshost history $CDEF" 
+        stat  $snapback/$squidsnapConf
+        return $? 
+    fi 
+} 
+
+squid_crushCnf () {                                 # crushing the squid config default file to a new one 
+    if [[ -n $1 ]] && [[ -f $1  ]] ; then           
+         prompt " crushing squid.conf ... " && sleep 2 
+         sudo mv -v $1 $DIRCONF/${PRXYUTILS[1]::-1}/
+         return $? 
+    else 
+        bail " $1 is not a file "
+    fi 
+} 
+
+Squid3EnableServices  () {                          # enable the service of squid 
+     sudo service ${PRXYUTILS[1]::-1} status
+     [ $? -eq 0 ]||  prompt " status : Failed $b_CRER⬤$CDEF" ; exit 1 
+
+}
+
+runAll () {                                         # start all service writed in the script  
+ local Services=("$1" "$2" "$3") 
+ declare -r Services 
+ prompt "starting... " 
+ for service in ${Services[@]} ; do 
+    prompt "$CGSC on stage $CDEF  $service "
+   # procrastinate  ${#Services[*]} .2 
+    eval $service 
+ done
+}
+
+# for instance is used to restore squid config 
+restore () {                                        # restore the default squid config file in /etc 
+    if [[ -n $1 ]] && [[ $1 == $squidsnapConf ]] ;  # NOTICE: restore only the last snapshot 
+    then 
+        prompt " using snapback up to restore back" 
+        [[  -f $snapback/$1 ]] && {
+        #  cp -rv $snapback/$1 $DIRCONF/${PRXYUTILS[1]::-1}/ 
+        echo "{$1:}"
+         }|| {
+            bail " file name $1 is not found "
+        }
+    fi 
+
+}
+cpu_manager () {                                    # check the CPu Load average to start the script 
+    local lmt_overloaded=$(nproc --all)             # the loadavg should be under the numbre of core proces 
+    prompt "analyzing  load average  memory process ... " 
+    procrastinate 20 .3
+
+    if [[ "${cpuloadavg::-3}" -gt "$lmt_overloaded" ]] ; then 
+        bail " your cpu is hightly used kill the useless process launch it again" $ERRDEF
+        exit $? 
+    else 
+        prompt  "$b_CCIN \xE2\x9C\x94 cPu loadavg checked $CDEF"         
+    fi
+
+}
+
+Vpndump_opt_helper () {                         # Print Description and show the Usage
+echo -e "
+VERSION : 0.1.0
+CODENAME: ProxV 
+OS LANG : ${LANG:0:2}
+DESCRIPTION : this programme enable a tcp connexion made by any  given client  to follow through 
+remote proxy . It's act like changing your Public Ip address to another countries 
+the remote address proxy used in this is form to this website -> 
+$CCIN https://www.proxynova.com/proxy-server-list/ $CDEF 
+visite Squid web page to get more information  ~> $CCIN http://www.squid-cache.org/Doc/config/ $CDEF 
+try it out if you want to test it 
+
+USAGE:  ${0:2:7}  <flag>  
+    $b_CDEF-eap , --enable-address-proxy $CDEF
+            take available proxy address 
+    $b_CDEF-pch , --proxychains $CDEF
+            read the congifiguration od proxyshains 
+            if proxychaines is not available in your 
+            computer  it' l automatcli downloaded from  source 
+    $b_CDEF-up , --upgrade-pchains $CDEF 
+            upgrade proxychains to the last version 
+    $b_CDEF-sqd, --enable-squid $CDEF 
+            enable Squid services 
+    $b_CDEF-r,read <file> $CDEF 
+            read your squid modified configuration 
+    $b_CDEF-a,--enable-all $CDEF 
+            start all script OPT1 OPT2 and Squid_service
+    $b_CDEF-s,--save <ip_proxy>$CDEF 
+            run single address proxy and save it to the $PRXYF 
+            if $PRXYF doesn't exist i'll be created
+    $b_CDEF-res,--restore <name of the file config> 
+            restore the last snapshot config file name 
+            NOTICE: on each initialisation of service a snapshot 
+            was token 
+    $b_CDEF-h , --help $CDEF
+            display this help an exit 
+
+"
+}
+
+procrastinate () {              
+    local char="▒" #"▇" 
+    local Limite_rate=100
+    local stater=0
+    local status="" 
+   [[ -n $2 ]] && { 
+          sleep $2
+      }|| {
+         echo "rock yourself " 
+        return 0 
+      } 
+    echo -en "$b_CGSC|"
+       while [ $Limite_rate -gt $1 ] ; do
+        printf  "$char" && sleep $2 
+        starter=$((starter +1)) 
+        if [[  $starter -eq $1 ]] ; then 
+            echo -en "| 100 % [done]$CDEF"
+            echo 
+            return 0 
+        fi 
+    done  
+} 
+
+
